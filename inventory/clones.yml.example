@@ -1,0 +1,37 @@
+---
+clone_jobs:
+  vars:
+    ansible_connection: ssh
+    ansible_user: opc
+    ansible_private_key_file: "/home/youruser/.ssh/your_key.pem"
+    ansible_become: true
+    ansible_become_user: root
+    log_dir: /tmp/dbaascli-clones
+    continue_on_error: true
+
+    # TDE Mode: okv (default), local, or local_tde
+    tde_mode: local_tde
+
+    # For OKV mode: set these
+    # okv_wallet_name: "prod_wallet"
+    # okv_admin_user: "okv_admin"
+    # okv_access_mode: "READ_ONLY"
+    # okv_password: "your_okv_password"
+
+    # For local mode: set these paths instead
+    # source_wallet_path: "/u01/oradata/PROD_CDB/admin/wallet"
+    # dest_wallet_path: "/u01/oradata/TEST_CDB_01/admin/wallet"
+
+    # Refreshable PDB clone — always enabled
+    refresh_mode: MANUAL
+    dblink_username: "C##DBLINK"
+    db_password: "your_db_password"
+
+  hosts:
+    clone_pdb01:
+      ansible_host: 192.0.2.10          # ExaCS node IP
+      source_db: SOURCE_CDB             # source CDB name
+      target_db: TARGET_CDB             # target CDB name
+      source_pdb: SOURCE_PDB            # PDB to clone
+      target_pdb: TARGET_PDB_CLONE      # name for the new PDB
+      source_db_connection_string: "192.0.2.10:1521/SOURCE_CDB.your.domain.com"
