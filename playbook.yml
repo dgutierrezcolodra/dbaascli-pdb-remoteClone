@@ -1,0 +1,69 @@
+---
+- name: dbaascli PDB Clone Orchestration
+  hosts: clone_jobs
+  gather_facts: false  # not needed; timestamp comes from pipe lookup below
+
+  vars:
+    log_dir: /tmp/dbaascli-clones
+
+  pre_tasks:
+    - name: Capture timestamp
+      set_fact:
+        # Evaluated once and cached — lookup('pipe') re-runs on every reference,
+        # which would produce different filenames across tasks.
+        log_timestamp: "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+
+    - name: Validate required variables
+      assert:
+        that:
+          - source_db is defined
+          - target_db is defined
+          - source_pdb is defined
+          - target_pdb is defined
+          - tde_mode | default('okv') in ['okv', 'local', 'local_tde']
+          - tde_mode != 'okv' or (okv_wallet_name != '' and okv_admin_user != '')
+          - dblink_username is defined and dblink_username != ''
+          - refresh_mode | default('MANUAL') in ['AUTO', 'MANUAL']
+        fail_msg: |
+          Required variables missing or invalid.
+          For tde_mode=okv: provide okv_wallet_name and okv_admin_user
+          For tde_mode=local: provide source_wallet_path and dest_wallet_path
+          Always required: dblink_username (common user in source CDB for the dblink)
+      run_once: false
+
+    - name: Create log directory
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost  # log lives on the controller, not the ExaCS host
+      run_once: true
+
+  tasks:
+    # Phases 1 and 3 only apply when TDE keys are shared via OKV or local wallet.
+    # With local_tde each CDB manages its own keys — no wallet access needed.
+    - name: Phase 1 - Grant TDE Access
+      include_role:
+        name: grant_tde_access
+      register: grant_result
+      when: tde_mode != 'local_tde'
+
+    - name: Phase 2 - Clone PDB
+      include_role:
+        name: clone_pdb
+      register: clone_result
+      ignore_errors: "{{ continue_on_error | default(true) }}"  # Phase 3 must always run
+
+    - name: Phase 3 - Revoke TDE Access (cleanup)
+      include_role:
+        name: revoke_tde_access
+      register: revoke_result
+      when: tde_mode != 'local_tde'
+
+  post_tasks:
+    - name: Display completion message
+      debug:
+        msg: |
+          Clone operation complete.
+          Log: {{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log
+      run_once: true

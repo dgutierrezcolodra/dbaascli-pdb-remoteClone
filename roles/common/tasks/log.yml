@@ -1,0 +1,10 @@
+---
+# Appends one line to the per-host log file on the Ansible controller.
+# Expects: log_message, log_dir, inventory_hostname, log_timestamp
+
+- name: Log operation result
+  lineinfile:
+    path: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log"
+    line: "{{ log_message }}"
+    create: yes
+  delegate_to: localhost

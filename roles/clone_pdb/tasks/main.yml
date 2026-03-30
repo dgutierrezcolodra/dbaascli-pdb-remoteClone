@@ -1,0 +1,141 @@
+---
+# dbaascli prompts for passwords interactively — it can't read from stdin or accept
+# them as arguments. We use expect to respond to those prompts automatically.
+#
+# We write the script to a temp file instead of using expect -c because Tcl doesn't
+# treat backslash-newline as a line continuation inside -c strings. The result is that
+# sleep/send get passed as arguments to spawn and dbaascli throws [FATAL] Invalid argument.
+
+- name: Execute PDB remote clone
+  block:
+    # --- Optional prerequisites check ---
+    # Run with: -e "run_prereqs=true"
+    # When active, only the prereqs run — the actual clone is skipped.
+    - name: Write expect script for prerequisites check
+      copy:
+        dest: "/tmp/.prereqs_{{ inventory_hostname }}.exp"
+        mode: '0700'
+        content: |
+          #!/usr/bin/expect -f
+          set timeout 300
+          set password "{{ db_password }}"
+          spawn dbaascli pdb remoteClone --executePrereqs --pdbName {{ source_pdb }} --dbName {{ target_db }} --sourceDBConnectionString {{ source_db_connection_string | default(source_db) }} --targetPDBName {{ target_pdb }} --refreshablePDB --refreshMode {{ refresh_mode | default('MANUAL') }} --dblinkUsername {{ dblink_username }}
+
+          # dbaascli doesn't expose a programmatic interface — passwords must be sent
+          # blind. Sleep gives dbaascli time to process each one before the next arrives.
+          sleep 5
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          expect eof
+          catch wait result
+          exit [lindex $result 3]
+      become: true
+      become_user: root
+      no_log: true
+      when: run_prereqs | default(false)
+
+    - name: Run clone prerequisites check
+      shell: /usr/bin/expect /tmp/.prereqs_{{ inventory_hostname }}.exp
+      become: true
+      become_user: root
+      no_log: true
+      timeout: 300
+      when: run_prereqs | default(false)
+
+    - name: Remove prerequisites expect script
+      file:
+        path: "/tmp/.prereqs_{{ inventory_hostname }}.exp"
+        state: absent
+      become: true
+      become_user: root
+      when: run_prereqs | default(false)
+
+    # --- Actual clone ---
+    # Skipped when run_prereqs=true so prereqs and clone are mutually exclusive.
+    - name: Write expect script to temp file
+      copy:
+        dest: "/tmp/.clone_{{ inventory_hostname }}.exp"
+        mode: '0700'
+        content: |
+          #!/usr/bin/expect -f
+          set timeout 3600
+          set password "{{ db_password }}"
+          # --waitForCompletion true keeps dbaascli in the foreground so we get the exit code
+          spawn dbaascli pdb remoteClone --pdbName {{ source_pdb }} --dbName {{ target_db }} --sourceDBConnectionString {{ source_db_connection_string | default(source_db) }} --targetPDBName {{ target_pdb }} --waitForCompletion true --refreshablePDB --refreshMode {{ refresh_mode | default('MANUAL') }} --dblinkUsername {{ dblink_username }}
+
+          # dbaascli doesn't expose a programmatic interface — passwords must be sent
+          # blind. Sleep gives dbaascli time to process each one before the next arrives.
+          sleep 5
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          expect eof
+          catch wait result
+          exit [lindex $result 3]  # propagate dbaascli exit code to the shell
+      become: true
+      become_user: root
+      no_log: true
+      when: not (run_prereqs | default(false))
+
+    - name: Execute PDB remote clone
+      shell: /usr/bin/expect /tmp/.clone_{{ inventory_hostname }}.exp
+      register: clone_result
+      become: true
+      become_user: root
+      timeout: 3600
+      no_log: true  # stdout contains the password in plaintext during pre-prompt sends
+      when: not (run_prereqs | default(false))
+
+    - name: Log clone success
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 2 (CLONE): SUCCESS - PDB {{ source_pdb }} cloned to {{ target_pdb }}"
+      when: not (run_prereqs | default(false))
+
+    - name: Log dbaascli job details
+      lineinfile:
+        path: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log"
+        line: "  {{ item }}"
+        create: yes
+      delegate_to: localhost
+      loop: "{{ clone_result.stdout_lines | select('match', '.*(Job id|Session log|Log file location).*') | list }}"
+      when: not (run_prereqs | default(false))
+
+  rescue:
+    - name: Log clone failure
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 2 (CLONE): FAILED"
+
+    - name: Log dbaascli output on failure
+      lineinfile:
+        path: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log"
+        line: "  {{ item }}"
+        create: yes
+      delegate_to: localhost
+      loop: "{{ clone_result.stdout_lines | select('match', '.*(Job id|Session log|Log file location|FATAL|ERROR).*') | list }}"
+      when: clone_result is defined and clone_result.stdout_lines is defined
+
+    - name: Fail
+      fail:
+        msg: "Clone failed"
+
+  always:
+    - name: Remove expect scripts  # both contain plaintext password
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/.clone_{{ inventory_hostname }}.exp"
+        - "/tmp/.prereqs_{{ inventory_hostname }}.exp"
+      become: true
+      become_user: root

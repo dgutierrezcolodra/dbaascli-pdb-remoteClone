@@ -1,0 +1,81 @@
+---
+# Phase 1: give the target CDB read access to the source TDE keys before cloning.
+
+- name: Grant OKV wallet access to target CDB
+  block:
+    - name: Write expect script for OKV grant
+      copy:
+        dest: "/tmp/.grant_tde_{{ inventory_hostname }}.exp"
+        mode: '0700'
+        content: |
+          #!/usr/bin/expect -f
+          set timeout 3600
+          set password "{{ okv_password }}"
+          spawn dbaascli tde grantAccessToOKVWallet --dbname {{ target_db }} --okvWalletName {{ okv_wallet_name }} --okvWalletAccess {{ okv_access_mode }} --okvAdminUserName {{ okv_admin_user }} --waitForCompletion true
+
+          sleep 5
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          expect eof
+          catch wait result
+          exit [lindex $result 3]
+      become: true
+      become_user: root
+      no_log: true
+      when: tde_mode | default('okv') == 'okv'
+
+    - name: Grant OKV access
+      shell: /usr/bin/expect /tmp/.grant_tde_{{ inventory_hostname }}.exp
+      register: grant_result
+      become: true
+      become_user: root
+      timeout: 3600
+      when: tde_mode | default('okv') == 'okv'
+
+    - name: Log OKV grant success
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 1 (GRANT/OKV): SUCCESS"
+      when: tde_mode | default('okv') == 'okv'
+
+    # local mode: no OKV, just copy the wallet files to the target path
+    - name: Copy source wallet to destination (Local mode)
+      shell: |
+        test -d "{{ source_wallet_path }}" || (echo "Source wallet not found" && exit 1)
+        cp -r {{ source_wallet_path }}/* {{ dest_wallet_path }}/ || exit 1
+        chmod 700 {{ dest_wallet_path }}
+      register: wallet_copy
+      changed_when: "wallet_copy.rc == 0"
+      become: true
+      become_user: root
+      when: tde_mode == 'local'
+
+    - name: Log local wallet grant success
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 1 (GRANT/Local): SUCCESS - Wallet copied"
+      when: tde_mode == 'local'
+
+  rescue:
+    - name: Log grant failure
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 1 (GRANT): FAILED"
+
+    - name: Fail
+      fail:
+        msg: "Grant access failed"
+
+  always:
+    - name: Remove expect script  # contains plaintext password
+      file:
+        path: "/tmp/.grant_tde_{{ inventory_hostname }}.exp"
+        state: absent
+      become: true
+      become_user: root
+      when: tde_mode | default('okv') == 'okv'

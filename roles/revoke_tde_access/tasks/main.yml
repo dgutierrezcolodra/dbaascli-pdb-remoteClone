@@ -1,0 +1,76 @@
+---
+# Phase 3: revoke TDE access granted in Phase 1. Always runs, even if the clone failed.
+
+- name: Revoke OKV wallet access from target CDB
+  block:
+    - name: Write expect script for OKV revoke
+      copy:
+        dest: "/tmp/.revoke_tde_{{ inventory_hostname }}.exp"
+        mode: '0700'
+        content: |
+          #!/usr/bin/expect -f
+          set timeout 3600
+          set password "{{ okv_password }}"
+          spawn dbaascli tde revokeAccessFromOKVWallet --dbname {{ target_db }} --okvWalletName {{ okv_wallet_name }} --okvAdminUserName {{ okv_admin_user }} --waitForCompletion true
+
+          sleep 5
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          sleep 1
+          send "$password\r"
+          expect eof
+          catch wait result
+          exit [lindex $result 3]
+      become: true
+      become_user: root
+      no_log: true
+      when: tde_mode | default('okv') == 'okv'
+
+    - name: Revoke OKV access
+      shell: /usr/bin/expect /tmp/.revoke_tde_{{ inventory_hostname }}.exp
+      register: revoke_result
+      become: true
+      become_user: root
+      timeout: 3600
+      when: tde_mode | default('okv') == 'okv'
+
+    - name: Log OKV revoke success
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 3 (REVOKE/OKV): SUCCESS"
+      when: tde_mode | default('okv') == 'okv'
+
+    - name: Remove destination wallet (Local mode)
+      file:
+        path: "{{ dest_wallet_path }}"
+        state: absent
+      register: wallet_remove
+      changed_when: "wallet_remove.state is not defined"
+      become: true
+      become_user: root
+      when: tde_mode == 'local'
+
+    - name: Log local wallet revoke success
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 3 (REVOKE/Local): SUCCESS - Wallet removed"
+      when: tde_mode == 'local'
+
+  rescue:
+    # Non-fatal: clone is already done. Log and move on — manual cleanup needed.
+    - name: Log cleanup failure (non-blocking)
+      include_tasks: ../common/tasks/log.yml
+      vars:
+        log_message: "PHASE 3 (REVOKE): FAILED (manual cleanup required)"
+
+  always:
+    - name: Remove expect script  # contains plaintext password
+      file:
+        path: "/tmp/.revoke_tde_{{ inventory_hostname }}.exp"
+        state: absent
+      become: true
+      become_user: root
+      when: tde_mode | default('okv') == 'okv'
