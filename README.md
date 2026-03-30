@@ -14,7 +14,6 @@ Ansible automation for cloning PDBs on Oracle ExaCS using `dbaascli`.
 |------|-------------|
 | `local_tde` | TDE managed locally by each CDB. Simplest. Only this one is tested. |
 | `okv` | Oracle Key Vault. Adds grant/revoke phases around the clone. |
-| `local` | Wallet as a local file. Development use. |
 
 ## Prerequisites
 
